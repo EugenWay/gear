@@ -163,7 +163,10 @@ function submitProgram(api, sudoPair, program, salt, programs) {
       initMessage = api.createType('Bytes', Array.from(api.createType('f32', program.init_message.value).toU8a()));
     } else if (program.init_message.kind === 'f64') {
       initMessage = api.createType('Bytes', Array.from(api.createType('f64', program.init_message.value).toU8a()));
-    } else if (program.init_message.kind === 'utf-8') {
+    } else if (program.init_message.kind === 'custom') {
+      initMessage = api.createType('Bytes', Array.from(api.createType(`CustomInitPayload_${program.path}`, program.init_message.value).toU8a()));
+      console.log(initMessage.toHex())
+    } else if (program.init_message.kind === 'i32') {
       if (program.init_message.value.search(/{([0-9]*)\}/) !== -1) {
         const res = program.init_message.value.match(/{([0-9]*)\}/);
         const id = Number(res[1]);
@@ -220,7 +223,7 @@ async function processExpected(api, sudoPair, fixture, programs) {
       // Poll the number of processed messages for 60 seconds, then break
       try {
         await runWithTimeout(queryProcessedMessages(), 60000);
-      } catch(err) {
+      } catch (err) {
         errors.push(`${err}`);
       }
 
@@ -299,10 +302,66 @@ async function processFixture(api, sudoPair, fixture, programs) {
   return processExpected(api, sudoPair, fixture, programs);
 }
 
-async function processTest(test, api, sudoPair) {
+async function processTest(test) {
+
+  // Create the API and wait until ready
+  const api = await ApiPromise.create({
+    provider,
+    types: {
+      "Message": {
+        "id": "H256",
+        "source": "H256",
+        "dest": "H256",
+        "payload": "Vec<u8>",
+        "gas_limit": "u64",
+        "value": "u128",
+        "reply": "Option<(H256, i32)>"
+      },
+      "meta_init_payload": {
+        "value": "u64", "annotation": "String"
+      },
+      "Node": {
+        "value": "Message",
+        "next": "Option<H256>"
+      },
+      "IntermediateMessage": {
+        "_enum": {
+          "InitProgram": {
+            "origin": "H256",
+            "program_id": "H256",
+            "code": "Vec<u8>",
+            "payload": "Vec<u8>",
+            "gas_limit": "u64",
+            "value": "u128"
+          },
+          "DispatchMessage": {
+            "id": "H256",
+            "origin": "H256",
+            "destination": "H256",
+            "payload": "Vec<u8>",
+            "gas_limit": "u64",
+            "value": "u128",
+          }
+        }
+      },
+      "Reason": {
+        "_enum": ["ValueTransfer", "Dispatch", "BlockGasLimitExceeded"]
+      },
+    },
+  });
+
+  // Retrieve the upgrade key from the chain state
+  const adminId = await api.query.sudo.key();
+
+  // Find the actual keypair in the keyring (if this is a changed value, the key
+  // needs to be added to the keyring before - this assumes we have defaults, i.e.
+  // Alice as the key - and this already exists on the test keyring)
+  const keyring = testKeyring.createTestKeyring();
+  const adminPair = keyring.getPair(adminId.toString());
   const programs = [];
   const salts = [];
   const txs = [];
+  console.log(test.programs)
   // Submit programs
   for (const fixture of test.fixtures) {
     const reset = await resetStorage(api, sudoPair);
@@ -347,64 +406,24 @@ async function main() {
 
   // Initialise the provider to connect to the local node
   const provider = new WsProvider('ws://127.0.0.1:9944');
+  let customPayload = [];
 
-  // Create the API and wait until ready
-  const api = await ApiPromise.create({
-    provider,
-    types: {
-      "Message": {
-        "id": "H256",
-        "source": "H256",
-        "dest": "H256",
-        "payload": "Vec<u8>",
-        "gas_limit": "u64",
-        "value": "u128",
-        "reply": "Option<(H256, i32)>"
-      },
-      "Node": {
-        "value": "Message",
-        "next": "Option<H256>"
-      },
-      "IntermediateMessage": {
-        "_enum": {
-          "InitProgram": {
-            "origin": "H256",
-            "program_id": "H256",
-            "code": "Vec<u8>",
-            "payload": "Vec<u8>",
-            "gas_limit": "u64",
-            "value": "u128"
-          },
-          "DispatchMessage": {
-            "id": "H256",
-            "origin": "H256",
-            "destination": "H256",
-            "payload": "Vec<u8>",
-            "gas_limit": "u64",
-            "value": "u128",
-          }
-        }
-      },
-      "Reason": {
-        "_enum": ["ValueTransfer", "Dispatch", "BlockGasLimitExceeded"]
-      },
-    },
-  });
+  for (let index = 0; index < tests.length; index++) {
+    const test = tests[index];
+    test.programs.forEach(program => {
+      test.programs[program.id - 1].init_input = {
+        "value": "u64", "annotation": "String"
+      };
+    });
 
-  // Retrieve the upgrade key from the chain state
-  const adminId = await api.query.sudo.key();
+  }
 
-  // Find the actual keypair in the keyring (if this is a changed value, the key
-  // needs to be added to the keyring before - this assumes we have defaults, i.e.
-  // Alice as the key - and this already exists on the test keyring)
-  const keyring = testKeyring.createTestKeyring();
-  const adminPair = keyring.getPair(adminId.toString());
 
   for (const test of tests) {
     if (test.skipRpcTest)
       continue;
     console.log("Test:", test.title);
-    await processTest(test, api, adminPair);
+    await processTest(test);
   }
   process.exit(0);
 }
