@@ -6,6 +6,7 @@ const {
   ApiPromise,
   WsProvider,
 } = require('@polkadot/api');
+const { getWasmMetadata } = require("../utils/wasm-proc/metadata-js");
 const { xxhashAsHex, blake2AsU8a } = require('@polkadot/util-crypto');
 
 // import the test keyring (already has dev keys for Alice, Bob, Charlie, Eve & Ferdie)
@@ -107,6 +108,9 @@ async function checkMessages(api, exp, programs) {
         payload = api.createType('Bytes', Array.from(api.createType('f32', expMessage.payload.value).toU8a()));
       } else if (expMessage.payload.kind === 'f64') {
         payload = api.createType('Bytes', Array.from(api.createType('f64', expMessage.payload.value).toU8a()));
+      } else if (expMessage.payload.kind === 'custom') {
+        payload = api.createType('Bytes', Array.from(api.createType(`meta_${expMessage.payload.program_meta}_output`, message.payload.value).toU8a()));
+        // payload = api.createType('Bytes', Array.from(api.createType('f64', expMessage.payload.value).toU8a()));
       } else if (expMessage.payload.kind === 'utf-8') {
         payload = Buffer.from(expMessage.payload.value, 'utf8');
       }
@@ -164,7 +168,7 @@ function submitProgram(api, sudoPair, program, salt, programs) {
     } else if (program.init_message.kind === 'f64') {
       initMessage = api.createType('Bytes', Array.from(api.createType('f64', program.init_message.value).toU8a()));
     } else if (program.init_message.kind === 'custom') {
-      initMessage = api.createType('Bytes', Array.from(api.createType(`CustomInitPayload_${program.path}`, program.init_message.value).toU8a()));
+      initMessage = api.createType('Bytes', Array.from(api.createType(`meta_${program.id}_init_input`, program.init_message.value).toU8a()));
       console.log(initMessage.toHex())
     } else if (program.init_message.kind === 'i32') {
       if (program.init_message.value.search(/{([0-9]*)\}/) !== -1) {
@@ -282,6 +286,10 @@ async function processFixture(api, sudoPair, fixture, programs) {
       msg = api.createType('Bytes', Array.from(api.createType('f32', message.payload.value).toU8a()));
     } else if (message.payload.kind === 'f64') {
       msg = api.createType('Bytes', Array.from(api.createType('f64', message.payload.value).toU8a()));
+    } else if (message.payload.kind === 'custom') {
+      console.log(programs)
+      msg = api.createType('Bytes', Array.from(api.createType(`meta_${message.destination}_input`, message.payload.value).toU8a()));
+      console.log(msg.toHex())
     } else if (message.payload.kind === 'utf-8') {
       if (message.payload.value.search(/{([0-9]*)\}/) !== -1) {
         const res = message.payload.value.match(/{([0-9]*)\}/);
@@ -304,50 +312,93 @@ async function processFixture(api, sudoPair, fixture, programs) {
 
 async function processTest(test) {
 
+  // Initialise the provider to connect to the local node
+  const provider = new WsProvider('ws://127.0.0.1:9944');
+
+  let rpc = {
+    gear: {
+      getGasSpent: {
+        description: 'Get amount of gas that will spend by sending a message',
+        params: [
+          {
+            name: 'program_id',
+            type: 'H256'
+          },
+          {
+            name: 'payload',
+            type: 'Bytes'
+          },
+          {
+            name: 'at',
+            type: 'Hash',
+            isOptional: true
+          }
+        ],
+        type: 'u64'
+      },
+    },
+  };
+
+  let types = {
+    "Message": {
+      "id": "H256",
+      "source": "H256",
+      "dest": "H256",
+      "payload": "Vec<u8>",
+      "gas_limit": "u64",
+      "value": "u128",
+      "reply": "Option<(H256, i32)>"
+    },
+    "Node": {
+      "value": "Message",
+      "next": "Option<H256>"
+    },
+    "IntermediateMessage": {
+      "_enum": {
+        "InitProgram": {
+          "origin": "H256",
+          "program_id": "H256",
+          "code": "Vec<u8>",
+          "payload": "Vec<u8>",
+          "gas_limit": "u64",
+          "value": "u128"
+        },
+        "DispatchMessage": {
+          "id": "H256",
+          "origin": "H256",
+          "destination": "H256",
+          "payload": "Vec<u8>",
+          "gas_limit": "u64",
+          "value": "u128",
+        }
+      }
+    },
+    "Reason": {
+      "_enum": ["ValueTransfer", "Dispatch", "BlockGasLimitExceeded"]
+    },
+  };
+
+  var metas = new Promise((resolve, reject) => {
+    test.programs.forEach((program) => {
+      const meta_binary = fs.readFileSync(program.meta);
+
+      getWasmMetadata(meta_binary).then((metadata) => {
+        types[`meta_${program.id}_init_input`] = metadata.init_input;
+        types[`meta_${program.id}_init_output`] = metadata.init_output;
+        types[`meta_${program.id}_input`] = metadata.input;
+        types[`meta_${program.id}_output`] = metadata.output;
+        resolve();
+      });
+    });
+  });
+
+  await metas;
+
   // Create the API and wait until ready
   const api = await ApiPromise.create({
     provider,
-    types: {
-      "Message": {
-        "id": "H256",
-        "source": "H256",
-        "dest": "H256",
-        "payload": "Vec<u8>",
-        "gas_limit": "u64",
-        "value": "u128",
-        "reply": "Option<(H256, i32)>"
-      },
-      "meta_init_payload": {
-        "value": "u64", "annotation": "String"
-      },
-      "Node": {
-        "value": "Message",
-        "next": "Option<H256>"
-      },
-      "IntermediateMessage": {
-        "_enum": {
-          "InitProgram": {
-            "origin": "H256",
-            "program_id": "H256",
-            "code": "Vec<u8>",
-            "payload": "Vec<u8>",
-            "gas_limit": "u64",
-            "value": "u128"
-          },
-          "DispatchMessage": {
-            "id": "H256",
-            "origin": "H256",
-            "destination": "H256",
-            "payload": "Vec<u8>",
-            "gas_limit": "u64",
-            "value": "u128",
-          }
-        }
-      },
-      "Reason": {
-        "_enum": ["ValueTransfer", "Dispatch", "BlockGasLimitExceeded"]
-      },
-    },
+    rpc,
+    types
   });
 
   // Retrieve the upgrade key from the chain state
@@ -362,22 +413,23 @@ async function processTest(test) {
   const salts = [];
   const txs = [];
   console.log(test.programs)
+
   // Submit programs
   for (const fixture of test.fixtures) {
-    const reset = await resetStorage(api, sudoPair);
+    const reset = await resetStorage(api, adminPair);
     for (const program of test.programs) {
       const salt = Math.random().toString(36).substring(7);
       programs[program.id] = generateProgramId(api, program.path, salt);
       salts[program.id] = salt;
     }
     for (const program of test.programs) {
-      const submit = submitProgram(api, sudoPair, program, salts[program.id], programs);
+      const submit = submitProgram(api, adminPair, program, salts[program.id], programs);
       txs.push(submit);
     }
 
-    await api.tx.utility.batch(txs).signAndSend(sudoPair, { nonce: -1 });
+    await api.tx.utility.batch(txs).signAndSend(adminPair, { nonce: -1 });
 
-    const out = await processFixture(api, sudoPair, fixture, programs);
+    const out = await processFixture(api, adminPair, fixture, programs);
     if (out.length > 0) {
       console.log(`Fixture ${fixture.title}: Ok`);
     }
@@ -403,20 +455,6 @@ async function main() {
   const totalFixtures = tests.reduce((tot, test) => tot + test.fixtures.length, 0);
 
   console.log('Total fixtures:', totalFixtures);
-
-  // Initialise the provider to connect to the local node
-  const provider = new WsProvider('ws://127.0.0.1:9944');
-  let customPayload = [];
-
-  for (let index = 0; index < tests.length; index++) {
-    const test = tests[index];
-    test.programs.forEach(program => {
-      test.programs[program.id - 1].init_input = {
-        "value": "u64", "annotation": "String"
-      };
-    });
-
-  }
 
 
   for (const test of tests) {

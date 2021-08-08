@@ -6,24 +6,20 @@ programs:
     meta: examples/target/wasm32-unknown-unknown/release/demo_meta.meta.wasm
     init_message:
       kind: custom
-      value:
-        value: 1
-        annotation: "hello"
+      value: { "value": 1, "annotation": "hello" }
 
 fixtures:
   - title: meta
     messages:
       - destination: 1
         payload:
-          kind: utf-8
-          value: empty here
-      - destination: 1
-        payload:
-          kind: utf-8
-          value: empty here
+          kind: custom
+          value: { "value": 2, "annotation": "handle" }
     expected:
-      - allocations:
-          - page_num: 17
-            program_id: 1
-          - page_num: 18
-            program_id: 1
+      - step: 1
+        messages:
+          - destination: 0
+            payload:
+              kind: custom
+              value: { "old_value": 1, "new_value": 2 }
+              program_meta: 1
