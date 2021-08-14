@@ -6,28 +6,43 @@ const {
   ApiPromise,
   WsProvider,
 } = require('@polkadot/api');
-const { xxhashAsHex, blake2AsU8a } = require('@polkadot/util-crypto');
+const { xxhashAsHex, blake2AsU8a, blake2AsHex } = require('@polkadot/util-crypto');
 
 // import the test keyring (already has dev keys for Alice, Bob, Charlie, Eve & Ferdie)
 const testKeyring = require('@polkadot/keyring/testing');
 const fs = require('fs');
 const yaml = require('js-yaml');
 
-function xxKey(module, key) {
-  return xxhashAsHex(module, 128) + xxhashAsHex(key, 128).slice(2);
+function xxKeyStorageValue(module, name) {
+  return xxhashAsHex(module, 128) + xxhashAsHex(name, 128).slice(2);
+}
+
+// key is hex string
+function xxKeyStorageMap(module, name, key) {
+  return xxhashAsHex(module, 128) + xxhashAsHex(name, 128).slice(2) + key.slice(2);
+}
+
+function xxKeyStorageDoubleMap(module, name, firstKey, secondKey) {
+  return xxhashAsHex(module, 128) + xxhashAsHex(name, 128).slice(2) + firstKey.slice(2) + secondKey.slice(2);
 }
 
 async function resetStorage(api, sudoPair) {
   const keys = [];
   const txs = [];
-  let hash = xxKey('Gear', 'DequeueLimit');
+  let hash = xxKeyStorageValue('Gear', 'DequeueLimit');
   keys.push(hash);
 
-  hash = xxKey('Gear', 'MessageQueue');
+  hash = xxKeyStorageValue('Gear', 'MessageQueue');
   keys.push(hash);
 
-  hash = xxKey('Gear', 'MessagesProcessed');
+  hash = xxKeyStorageValue('Gear', 'MessagesProcessed');
   keys.push(hash);
+
+  hash = xxKeyStorageMap('Gear', 'Mailbox',
+    '0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d'
+  );
+  keys.push(hash);
+
   txs.push(api.tx.sudo.sudo(
     api.tx.system.killStorage(
       keys,
@@ -128,6 +143,57 @@ async function checkMessages(api, exp, programs) {
   return errors;
 }
 
+async function checkLog(api, exp, programs) {
+  const errors = [];
+  if (exp.log.length === 0) {
+    return errors;
+  }
+  let mailboxKey = xxKeyStorageMap('Gear', 'Mailbox',
+    '0xd43593c715fdd31c61141abd04a99fd6822c8558854ccde39a5684e7a56da27d'
+  );
+  let mailboxBytes = await api.rpc.state.getStorage(mailboxKey);
+  let mailBox = api.createType('Mailbox', mailboxBytes.toHex());
+
+  // Map -> Array
+  mailBox = [...mailBox].map(([message_id, message]) => ({ message_id, message }));
+
+  if (mailBox.length !== exp.log.length) {
+    errors.push(`Mailbox count does not match: expected: ${exp.log.length}, actual: ${mailBox.length}`);
+    return errors;
+  }
+
+  for (let index = 0; index < exp.log.length; index++) {
+    const message = mailBox[index].message;
+    const expMessage = exp.log[index];
+
+
+    let payload = false;
+    if (expMessage.payload) {
+      if (expMessage.payload.kind === 'bytes') {
+        payload = api.createType('Bytes', expMessage.payload.value);
+      } else if (expMessage.payload.kind === 'i32') {
+        payload = api.createType('Bytes', Array.from(api.createType('i32', expMessage.payload.value).toU8a()));
+      } else if (expMessage.payload.kind === 'i64') {
+        payload = api.createType('Bytes', Array.from(api.createType('i64', expMessage.payload.value).toU8a()));
+      } else if (expMessage.payload.kind === 'f32') {
+        payload = api.createType('Bytes', Array.from(api.createType('f32', expMessage.payload.value).toU8a()));
+      } else if (expMessage.payload.kind === 'f64') {
+        payload = api.createType('Bytes', Array.from(api.createType('f64', expMessage.payload.value).toU8a()));
+      } else if (expMessage.payload.kind === 'utf-8') {
+        payload = Buffer.from(expMessage.payload.value, 'utf8');
+      }
+    }
+
+    if (payload && !message.payload.eq(payload)) {
+      errors.push("Mailbox message payload doesn't match");
+    }
+
+  }
+
+
+  return errors;
+}
+
 async function checkMemory(api, exp, programs) {
   const errors = [];
 
@@ -219,7 +285,7 @@ async function processExpected(api, sudoPair, fixture, programs) {
         const tx = [];
 
         // Set DequeueLimit
-        const hash = xxKey('Gear', 'DequeueLimit');
+        const hash = xxKeyStorageValue('Gear', 'DequeueLimit');
 
         tx.push(api.tx.sudo.sudo(
           api.tx.system.setStorage([[hash, api.createType('Option<u32>', api.createType('u32', exp.step)).toHex()]]),
@@ -253,6 +319,15 @@ async function processExpected(api, sudoPair, fixture, programs) {
         }
       }
 
+      if ('log' in exp) {
+        const res = await checkLog(api, exp, programs);
+        if (res.length === 0) {
+          output.push('MSG: OK');
+        } else {
+          errors.push(`MSG ERR: ${res}`);
+        }
+      }
+
       if ('memory' in exp) {
         const res = await checkMemory(api, exp, programs);
         if (res.length === 0) {
@@ -279,7 +354,7 @@ async function processFixture(api, sudoPair, fixture, programs) {
 
   if ('step' in fixture.expected[0]) {
     // Set DequeueLimit
-    const hash = xxKey('Gear', 'DequeueLimit');
+    const hash = xxKeyStorageValue('Gear', 'DequeueLimit');
     await api.tx.sudo.sudo(
       api.tx.system.setStorage([[hash, api.createType('Option<u32>', api.createType('u32', fixture.expected[0].step)).toHex()]]),
     ).signAndSend(sudoPair, { nonce: -1 });
@@ -402,6 +477,7 @@ async function main() {
         "value": "Message",
         "next": "Option<H256>"
       },
+      "Mailbox": "BTreeMap<H256, Message>",
       "IntermediateMessage": {
         "_enum": {
           "InitProgram": {

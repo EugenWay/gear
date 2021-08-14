@@ -38,7 +38,7 @@ fn decode_hex(s: &str) -> Result<Vec<u8>, ParseIntError> {
 }
 
 async fn handle_async() {
-    msg::send(0.into(), b"LOG", 0);
+    msg::send(msg::source(), b"LOG", 0);
     let dest = unsafe { PING_PROGRAM_ID };
     let another_reply = msg_async::send_and_wait_for_reply(dest, b"PING", 50_000_000, 0).await;
     let another_reply = String::from_utf8(another_reply).expect("Invalid reply: should be utf-8");
