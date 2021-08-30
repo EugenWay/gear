@@ -39,6 +39,7 @@ pub enum Request {
 pub enum Reply {
     Success,
     Failure,
+    StateFailure,
     Amount(u64),
 }
 
@@ -144,14 +145,19 @@ mod wasm {
 
         async fn handle_receive(amount: u64) -> Reply {
             ext::debug(&format!("Handling receive {}", amount));
-            let subnodes_count = Self::nodes().borrow().len() as u64;
+
+            let (subnodes_count, nodes) = match Program::nodes().try_borrow() {
+                Ok(nodes) => { (nodes.len() as u64, nodes) },
+                Err(_) => { return Reply::StateFailure; }
+            };
+
             if subnodes_count > 0 {
                 let distributed_per_node = amount / subnodes_count;
                 let distributed_total = distributed_per_node * subnodes_count;
                 let mut left_over = amount - distributed_total;
 
                 if distributed_per_node > 0 {
-                    for program in Program::nodes().borrow().iter() {
+                    for program in nodes.iter() {
                         if let Err(_) = program.do_send(distributed_per_node).await {
                             // reclaiming amount from nodes that fail!
                             left_over += distributed_per_node;
@@ -179,7 +185,12 @@ mod wasm {
             let mut amount = *Program::amount();
             ext::debug(&format!("Own amount: {}", amount));
 
-            for program in Program::nodes().borrow().iter() {
+            let nodes = match Program::nodes().try_borrow() {
+                Ok(nodes) => nodes,
+                Err(_) => { return Reply::StateFailure; }
+            };
+
+            for program in nodes.iter() {
                 ext::debug("Querying next node");
                 amount += match program.do_report().await {
                     Ok(amount) => {
@@ -456,4 +467,10 @@ mod tests {
         );
         assert_eq!(reply, Some(Reply::Amount(11)));
     }
+
+
+    #[test]
+    fn conflictig_nodes() {
+    }
+
 }
