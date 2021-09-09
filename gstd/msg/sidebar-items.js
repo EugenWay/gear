@@ -1,0 +1,1 @@
+initSidebarItems({"fn":[["gas_available",""],["id",""],["load",""],["load_bytes",""],["reply",""],["reply_bytes",""],["reply_push",""],["reply_push_bytes",""],["reply_to",""],["send",""],["send_bytes",""],["send_bytes_with_value",""],["send_init",""],["send_with_value",""],["source",""],["value",""],["wait",""],["wake",""]],"struct":[["MessageHandle",""]]});
